@@ -36,9 +36,16 @@ REM ============================================================
 REM Stop SystemBanner
 REM ============================================================
 ECHO.
+ECHO Removing SystemBanner sign-in task...
+SCHTASKS /Delete /TN "SystemBanner" /F >NUL 2>&1
+ECHO.
 ECHO Stopping SystemBanner...
 TASKLIST /FI "IMAGENAME eq SYSTEMBANNER.EXE" 2>NUL | FIND /I "SYSTEMBANNER.EXE" >NUL
 IF NOT ERRORLEVEL 1 (
+    REM Ask SystemBanner to close first so it releases its reserved screen space,
+    REM then force-close anything still running (a forced close leaves empty bars until Explorer restarts).
+    TASKKILL /IM SYSTEMBANNER.EXE >NUL 2>&1
+    TIMEOUT /T 2 /NOBREAK >NUL
     TASKKILL /F /IM SYSTEMBANNER.EXE >NUL 2>&1
     TIMEOUT /T 1 /NOBREAK >NUL
     TASKLIST /FI "IMAGENAME eq SYSTEMBANNER.EXE" 2>NUL | FIND /I "SYSTEMBANNER.EXE" >NUL

@@ -1,52 +1,152 @@
 # SystemBanner
 
------
-ABOUT
------
+SystemBanner displays the security classification of a Windows system in a coloured bar across the top (and optionally bottom) of every screen.
 
-SystemBanner is an application used to display information security attributes or classification markings applicable for the Windows systems it runs on.
+This version is published by Applied Virtual Simulation Pty Ltd. It is a heavily customised version of [SystemBanner by Aaron Wawrzyniak](https://github.com/awawrzyniak10/SystemBanner), used under the MIT License (see `LICENSE`). See [Differences from the original SystemBanner](#differences-from-the-original-systembanner) below, and `TESTING.md` for the test checklist.
 
-SystemBanner was built with standards in mind. For example, SystemBanner comes out of the box with Group Policy templates that can configure SystemBanner to display the different levels of United States Classified National Security Information as defined by EO 13526, as amended, and United States Controlled Unclassified Information as defined by EO 13556, as amended.
+## About
 
-![Alt text](Docs/Images/SystemBanner_Working_Screenshot.png?raw=true)
+SystemBanner shows the Australian Government security classifications, with colours based on the Protective Security Policy Framework (PSPF) Release 2026 Guidelines, section 9.2.3.2 "Colour-based Markings":
 
-In addition, custom options implemented in Group Policy which sets relevant Registry values allow for other types of organizations to display custom messages and colors to warn users of Windows-based computers of the sensitivity of the information displayed, such as PII, PHI, Proprietary, or any kind of text-based marking or warning.
+| Classification | Banner colour |
+|---|---|
+| UNOFFICIAL | White |
+| OFFICIAL | White |
+| OFFICIAL: Sensitive | Yellow |
+| PROTECTED | Blue |
+| SECRET | Pink/salmon |
+| TOP SECRET | Red |
 
-![Alt text](Docs/Images/SystemBanner_GPO_Screenshot.png?raw=true)
-![Alt text](Docs/Images/SystemBanner_Custom_Screenshot.png?raw=true)
+UNOFFICIAL and OFFICIAL have no PSPF-defined colour. All banner text is black. Only these predefined classifications can be displayed; there is no custom text or colour.
 
-SystemBanner displays the selected message to the user as soon as they are logged into Windows via one or more graphical SystemBanner AppBars. As the user connects to new displays or resizes existing ones, SystemBanner regenerates new SystemBanner AppBars to accommodate those changes. If fullscreen apps are detected, or the user moves their mouse over the SystemBanner, the opacity of the SystemBanner will decrease to allow visibility to objects behind the SystemBanner without fully hiding the relevant security attribute information displayed. 
+The banner appears as soon as a user signs in and reserves its own strip of each screen, so windows don't cover it. It adapts automatically when displays are added, removed or resized. It never changes on mouse hover and is never click-through. Policy and registry changes take effect within about a second.
 
-SystemBanner is a C# .NET Framework 4.7.2 Windows Forms Application that uses Group Policy and Registry values to maintain configuration variables and ensure that the application runs on logon. It uses the Win32 Shell AutoHideAppBarEX window type to generate AppBars on each screen. 
+SystemBanner is a C# .NET Framework 4.7.2 Windows Forms application, configured through Group Policy (or the equivalent registry values). The original SystemBanner was tested by its author on Windows 10/11 and Windows Server 2016–2025 (x64 and arm64); see `TESTING.md` for testing of this version.
 
-Unlike Microsoft NetBanner, which is unavailable to the public, full screen opacity choices made available by SystemBanner ensure that full screen applications (like videos) do not fully cover the SystemBanner. Additionally, some applications that do not adhere to standard window formatting (which can obscure Microsoft NetBanner) do not interfere with the visibility of SystemBanner generated markings. Lastly, out of the box support for custom colors and CUI markings allows this application to be used in the Defense Industrial Base, private sector, and other locations where security banners are useful or required. 
+## Installation
 
-SystemBanner has been tested to work on Windows 10/11 and Windows Server 2016/2019/2022/2025 with full functionality (including support for x86_64 and arm64 architectures). Limited functionality may be available on other versions of Windows that support .NET Framework 4.7.2 or above.
+Install `SystemBannerSetup.msi` (double-click, or `msiexec /i SystemBannerSetup.msi /qn` for silent deployment, e.g. Intune), or run `InstallSystemBanner.bat` as an administrator.
 
-------------
-INSTALLATION
-------------
+The installer:
 
-To install SystemBanner, either install SystemBannerSetup.msi (double click, msiexec via CLI, etc.) or download the project ZIP and run InstallSystemBanner.bat as an administrator. 
+- copies `SystemBanner.exe` to `C:\Program Files\SystemBanner` (fixed location; override only with `TARGETDIR=` on the command line),
+- copies the Group Policy templates to `C:\Windows\PolicyDefinitions` and `C:\Windows\PolicyDefinitions\en-US`,
+- registers a scheduled task, **SystemBanner**, that starts SystemBanner at sign-in for every user. It typically starts within a second or two, ahead of normal startup programs, runs as the signed-in user with standard rights, and has no time limit. A startup (Run key) entry is also kept as a backup; only one copy ever runs per session,
+- marks SystemBanner as High DPI aware (`HKLM\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`),
+- writes the default settings (see [Registry reference](#registry-reference)) to `HKLM\SOFTWARE\Policies\SystemBanner` and `HKLM\SOFTWARE\SystemBanner`, by running `SystemBanner.exe /install` (which also registers the scheduled task). Only **missing** values are written: an install or upgrade never overwrites settings already applied by Group Policy, Intune or the right-click menu. These values are left in place on removal.
 
-![Alt text](Docs/Images/SystemBanner_Install_Screenshot.png?raw=true)
+SystemBanner starts at the next sign-in, or run `C:\Program Files\SystemBanner\SystemBanner.exe`. Only one instance runs per signed-in session. If Explorer restarts (or the taskbar loads after SystemBanner), the banners re-reserve their screen space automatically.
 
-Each installer copies the SystemBanner Binary (SystemBanner.exe) to "C:\Program Files\SystemBanner", copies ADMX and ADML files (for Group Policy Functionality) to C:\Windows\PolicyDefinitions\ and C:\Windows\PolicyDefinitions\en-US\, creates a startup app registry key for SystemBanner to run on logon of any user, and puts a Registry value into "HKLM\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" to allow SystemBanner to be High DPI aware (ignore Windows Scaling). When installing with the MSI, SystemBanner will start the next time the user logs in or the next time the user runs C:\Program Files\SystemBanner\SystemBanner.exe, whichever happens first. 
+## Removal
 
--------
-REMOVAL
--------
+Uninstall SystemBanner from Settings › Apps (or `msiexec /x`), or run `RemoveSystemBanner.bat` as an administrator.
 
-To remove SystemBanner, either remove SystemBannerSetup.msi or run RemoveSystemBanner.bat as an administrator.
+Removal also deletes the **SystemBanner** scheduled task. A running SystemBanner closes itself cleanly during uninstall, upgrade or repair: it releases its reserved screen space before exiting, so no empty bars are left. Only a forced kill (Task Manager › End task, or `TASKKILL /F`) can leave empty reserved space behind; restart Windows Explorer or sign out to clear it.
 
-Each removal method kills all running instances of SystemBanner.exe, then deletes "C:\Program Files\SystemBanner\SystemBanner.exe", the "C:\Program Files\SystemBanner" folder, all SystemBanner ADMX and ADML files from C:\Windows\PolicyDefinitions\ and C:\Windows\PolicyDefinitions\en-US\, and removes itself as a startup app and HIGHDPIAWARE app in registry. Restarting Explorer.exe may clean up any remaining AppBar API calls that have not been cleaned up (the space the Banner makes for itself in the Windows UI).
+## Administration
 
---------------
-ADMINISTRATION
---------------
+Settings are in **Computer Configuration › Administrative Templates › SystemBanner**:
 
-SystemBanner comes out of the box with Group Policy templates to configure the security information displayed to the user. The ADMX/ADML files can be used to locally manage policy or they can be loaded onto a domain controller for domain-wide management. In either scenario, configuration items are located in Computer Configuration > Administrative Templates > SystemBanner. Once configuration changes are made, most are picked up by SystemBanner automatically while running. Custom color changes require an application restart at this time. 
+| Policy | What it does |
+|---|---|
+| **Configure classification banner** | Enforces a classification. While Enabled, the right-click menu is locked. If it later becomes Not Configured or Disabled, the last enforced classification stays displayed until changed or removed. |
+| **Set banner position** | Top only (default), or top and bottom. |
+| **Hide banner on displays showing a full-screen application** | Off by default. When on, the banner hides on any display where a full-screen application is on top (each display is checked separately), and reappears when it closes. While hidden, that display shows no marking. |
+| **Choose which groups can change the classification from the right-click menu** | Not Configured: Administrators. Enabled: only the listed groups. Disabled: nobody. |
 
-Active Directory Administrators - please manually copy the ADMX/ADML files to their appropriate locations on your domain controller to allow for Group Policy configuration of SystemBanner across your Domain or Forest.
+**Active Directory:** copy `SystemBanner.admx` and `en-US\SystemBanner.adml` to the domain's Central Store (`\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions`). Link the GPO to the **Domain Controllers** OU as well as workstation OUs if SystemBanner is installed on domain controllers.
 
-Intune Administrators - ADMX/ADML importing appears to be on the roadmap (https://learn.microsoft.com/en-us/intune/device-configuration/settings-catalog/import-custom-admx-templates). Until then, please use Local GPO to test/build your desired configuration, then deploy the corresponding registry values (HKEY_LOCAL_MACHINE\SOFTWARE\Policies\SystemBanner) to your fleet.
+**Intune:** import the ADMX/ADML as custom templates if available, or deploy the registry values in [Registry reference](#registry-reference) directly.
+
+### Right-click menu
+
+Authorised users can right-click the banner to set the classification on that device (for all users of the device). The menu lists the six classifications (current one ticked) and **Remove classification**, which sets the local classification back to 0 ("Classification is not configured."). When Group Policy is enforcing a classification, the menu shows "Managed by Group Policy - local changes disabled" and the options are greyed out. For everyone else, right-click does nothing.
+
+- **Default (policy Not Configured):** members of `BUILTIN\Administrators` (`S-1-5-32-544`). On workstations this is the local Administrators group (by default including Domain Admins); on domain controllers it is the domain's Builtin\Administrators group (by default including Domain Admins, Enterprise Admins and the domain Administrator). Administrators get a UAC prompt when changing the classification.
+- **Other groups:** list them in the policy (names or SIDs, separated by `;`; SIDs recommended) **and** grant them write access to `HKLM\SOFTWARE\SystemBanner` by running `ConfigurationScripts\Set-SystemBannerOverrideAcl.ps1 -Group <SID>` (elevated) on each device. Hiding the menu is not the security control; those registry permissions are.
+- Group membership changes take effect after the user signs out and back in.
+- Every change is logged to the Application event log (Event ID 1903) and recorded in the registry (who and when).
+
+**Decommissioning or reclassifying a device:** use **Remove classification**, or set `HKLM\SOFTWARE\SystemBanner\ClassificationOverride` to 0, so a previous marking isn't left displayed.
+
+## Registry reference
+
+### Classification values
+
+Classifications are stored as REG_DWORD numbers:
+
+| Value | Classification | Banner colour |
+|---|---|---|
+| 0 | Not configured | White ("Classification is not configured.") |
+| 1 | UNOFFICIAL | White |
+| 2 | OFFICIAL | White |
+| 3 | OFFICIAL: Sensitive | Yellow |
+| 4 | PROTECTED | Blue |
+| 5 | SECRET | Pink/salmon |
+| 6 | TOP SECRET | Red |
+
+Any value outside 1–6 is treated as not configured.
+
+### Where the classification is stored
+
+| Location | Type | Default | Set by | Meaning |
+|---|---|---|---|---|
+| `HKLM\SOFTWARE\Policies\SystemBanner\Classification` | REG_DWORD | 0 | Group Policy ("Configure classification banner") | **Enforced** classification. 1–6 takes precedence and locks the right-click menu; 0 = not enforced. |
+| `HKLM\SOFTWARE\SystemBanner\ClassificationOverride` | REG_DWORD | 0 | Right-click menu, or Group Policy (last enforced level) | **Local** classification, used only when `Classification` is 0. 0 = not configured; "Remove classification" sets it to 0. |
+| `HKLM\SOFTWARE\SystemBanner\OverrideSetBy` | REG_SZ | *(none)* | Same as above | Who set the local classification: a user name, or "Group Policy (last enforced)". |
+| `HKLM\SOFTWARE\SystemBanner\OverrideSetAt` | REG_SZ | *(none)* | Right-click menu | When it was set (UTC). Blank when set by Group Policy. |
+
+**Precedence:** `Classification` (1–6, enforced), then `ClassificationOverride` (1–6, local), then "Classification is not configured."
+
+### Other policy values (`HKLM\SOFTWARE\Policies\SystemBanner`)
+
+| Value | Type | Default | Meaning |
+|---|---|---|---|
+| `BannerPosition` | REG_DWORD | 0 | 0 = top only, 1 = top and bottom |
+| `FullscreenHide` | REG_DWORD | 0 | 1 = hide banners on displays showing a full-screen application |
+| `OverrideEnabled` | REG_DWORD | 1 | 1 = use `OverrideGroups`; 0 = nobody can use the menu |
+| `OverrideGroups` | REG_SZ | `S-1-5-32-544` | Groups allowed to use the right-click menu, separated by `;` (names or SIDs). Default = BUILTIN\Administrators |
+| `DebuggingEnabled` | REG_DWORD | 0 | 1 = diagnostic logging (Application event log, Event ID 1902, and `%LOCALAPPDATA%\SystemBanner\SystemBanner-debug.log`), plus on-banner debug labels. Test use only. |
+
+Defaults are written at install time only where a value is missing. A missing value behaves exactly like its default. In gpedit/GPMC these policies still show as **Not Configured** until a GPO sets them; that is expected, because the defaults are not part of any GPO.
+
+Values ignored by this version: `Simple`, `Text`, `0`–`5` and `TopAndBottom` (from the original SystemBanner), and `SimpleAU`, `Debug`, `FullscreenDim` and `HKLM\SOFTWARE\SystemBanner\OverrideLevel` (from pre-release builds of this version).
+
+### Quick check
+
+```powershell
+Get-ItemProperty 'HKLM:\SOFTWARE\Policies\SystemBanner','HKLM:\SOFTWARE\SystemBanner' -ErrorAction SilentlyContinue
+```
+
+## Differences from the original SystemBanner
+
+- **Classifications:** Australian PSPF classifications replace the United States presets. They use the registry value `Classification` (not the original `Simple`), so a mismatched program and policy show "not configured" rather than the wrong marking.
+- **No custom text or colours:** the Custom policies were removed, and leftover custom registry values are ignored.
+- **No hover fade; never click-through:** the original faded the banner on mouse hover and let clicks pass through to the desktop.
+- **Full-screen handling:** optional per-display hiding replaces the original opacity dimming, and detection works on every display (the original only checked the active window).
+- **Right-click menu:** new, group-gated, with Administrators as the default.
+- **Last enforced classification is kept** when the policy is removed, instead of reverting to "not configured".
+- **Group Policy templates:** renamed and simplified policies; classifications listed lowest to highest.
+- **Instant updates:** changes apply within about a second (the original checked every 60 seconds), and classification changes update the bar in place without flicker.
+- **Reliability fixes:** bottom-bar gaps after changes; the bar disappearing behind the taskbar during thumbnail previews; duplicate bars when started twice; empty bars left behind after uninstall; preset colour corruption and missed colour changes in the original code.
+- **Installer:** AVS branding, licence information page, fixed install folder.
+
+## Developer notes
+
+**Building:** Visual Studio with the .NET desktop development workload (.NET Framework 4.7.2 targeting pack) and the **Microsoft Visual Studio Installer Projects** extension. Build `SystemBanner`, then `SystemBannerSetup`, in Release; the MSI is written to the repository root. Bump the setup project's Version (accepting the new ProductCode) for each release, and keep the UpgradeCode unchanged so new versions replace old ones.
+
+**Design notes** (non-obvious decisions, kept for future maintainers):
+
+- **Bar placement** uses the shell's `ABM_QUERYPOS` → `ABM_SETPOS` sequence and repositions on `ABN_POSCHANGED`. Using `Screen.WorkingArea` caused a one-bar-height gap after rebuilds, because it is stale while the previous bar is being removed.
+- **Full-screen detection** walks top-level windows in z-order and, for each display, checks whether the top-most eligible window covers it. Shell surfaces (taskbar, desktop, thumbnails, Alt-Tab), tool windows, cloaked and minimised windows, and SystemBanner's own windows are ignored.
+- **Clean shutdown:** Restart Manager (Windows Installer) and `TASKKILL` only send close requests to visible, unowned top-level windows. The banners are therefore unowned tool windows (`cp.Parent = IntPtr.Zero`), and a 1×1 off-screen listener window handles `WM_QUERYENDSESSION`/`WM_ENDSESSION`/`WM_CLOSE`. On any close request, every bar's space is released first, then the process exits from a background thread, with a 1-second forced-exit backup. `Microsoft.Win32.SystemEvents` is deliberately not used, because it can deadlock `Environment.Exit`.
+- **Right-click menu** is a native Win32 popup (`TrackPopupMenuEx`); a WinForms `ContextMenuStrip` created a stray taskbar button from the never-activated banner.
+- **UAC:** group membership also checks the user's elevated (linked) token. When a direct registry write is denied, SystemBanner relaunches itself elevated with `/setoverride N`; that instance re-checks policy, writes the value, logs it and exits.
+- **Last enforced classification** is written by the ADMX `valueList` to `HKLM\SOFTWARE\SystemBanner` (outside `\Policies`, so it intentionally persists when the policy is removed).
+- **Instant updates** use `RegNotifyChangeKeyValue` on `HKLM\SOFTWARE\Policies` (subtree) and `HKLM\SOFTWARE\SystemBanner`, with a 0.5-second settle delay; the 60-second poll remains as a backup.
+- **Start-up:** a sign-in scheduled task (`SystemBanner.exe /install` registers it, `/uninstall` removes it; Users group principal, priority 4, `ExecutionTimeLimit` PT0S, `MultipleInstancesPolicy` Parallel), with the Run key kept as a fallback. The listener window also handles the `TaskbarCreated` broadcast and rebuilds the banners about 1 second later, so AppBar space is re-registered after Explorer restarts or when SystemBanner starts before the taskbar.
+- **Single instance:** per-session mutex `Local\SystemBanner.SingleInstance`; the elevated `/setoverride` helper is exempt.
+
+## Licence
+
+See `LICENSE`. SystemBanner is based on the original SystemBanner by Aaron Wawrzyniak, used under the MIT License; the original copyright and licence notice must be kept with all copies.

@@ -1,54 +1,86 @@
-<policyDefinitionResources revision="1.0" schemaVersion="1.0">
-  <displayName>
-  </displayName>
-  <description>
-  </description>
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" revision="2.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>SystemBanner</displayName>
+  <description>SystemBanner classification banner settings.</description>
   <resources>
     <stringTable>
-      <string id="unknown_0">SystemBanner</string>
-      <string id="unknown_1">Set Simple Classification Setting</string>
-      <string id="unknown_2">When this setting is enabled, the classification level selected will be shown. When set to UNCONFIGURED, not configured or disabled, the simple classification will be unconfigured and custom settings can be used.</string>
-      <string id="unknown_3">Top Only</string>
-      <string id="unknown_4">UNCONFIGURED</string>
-      <string id="unknown_5">UNCLASSIFIED</string>
-      <string id="unknown_6">CUI</string>
-      <string id="unknown_7">CONFIDENTIAL</string>
-      <string id="unknown_8">SECRET</string>
-      <string id="unknown_9">TOP SECRET</string>
-      <string id="unknown_10">TOP SECRET SCI</string>
-      <string id="unknown_11">Set Custom Background Color</string>
-      <string id="unknown_12">When Set Simple Classification Setting is set to UNCONFIGURED, not configured or disabled, and this setting is defined, this custom color value is displayed in the Background.</string>
-      <string id="unknown_13">Set Banner Position Setting</string>
-      <string id="unknown_14">When this setting is enabled, the banner positions selected will be shown. When set to UNCONFIGURED, not configured or disabled, only the top banner will display.</string>
-      <string id="unknown_15">Top And Bottom</string>
-      <string id="unknown_16">Set Custom Foreground Color</string>
-      <string id="unknown_17">When Set Simple Classification Setting is set to UNCONFIGURED, not configured or disabled, and this setting is defined, this custom color value is displayed in the Foreground.</string>
-      <string id="unknown_21">Set Custom Text</string>
-      <string id="unknown_22">When Set Simple Classification Setting is set to UNCONFIGURED, not configured or disabled, and this setting is defined, this custom text value is displayed in the Foreground.</string>
-      <string id="SystemBanner_UnresolvedString">The ADMX encountered a string that is not defined.</string>
+      <string id="Cat_SystemBanner">SystemBanner</string>
       <string id="SystemBanner_SupportedOn">At least Windows Server 2016, or Windows 10.</string>
+
+      <string id="Pol_Classification">Configure classification banner</string>
+      <string id="Pol_Classification_Help">Sets the security classification marking shown on the banner, with its standard colour.
+
+Available classifications:
+- UNOFFICIAL
+- OFFICIAL
+- OFFICIAL: Sensitive
+- PROTECTED
+- SECRET
+- TOP SECRET
+
+Markings and colours are based on the Australian Government Protective Security Policy Framework (PSPF), Release 2026 Guidelines, section 9.2.3.2 "Colour-based Markings":
+https://www.protectivesecurity.gov.au/system/files/2026-07/pspf-release-2026-guidelines.pdf
+
+UNOFFICIAL and OFFICIAL have no PSPF-defined colour and are shown with a white background.
+
+When Enabled, the selected classification is enforced: it takes precedence over the local (right-click) override, and the override menu is locked.
+
+The enforced classification is also recorded locally (HKLM\SOFTWARE\SystemBanner\ClassificationOverride). If this policy later becomes Not Configured or Disabled, the banner keeps showing the last enforced classification rather than reverting to "not configured", and authorised users can then change it from the right-click menu. To remove it, use "Remove classification" in the menu or delete that registry value.
+
+Registry: HKLM\Software\Policies\SystemBanner\Classification (REG_DWORD 1-6).</string>
+      <string id="AU_Unofficial">UNOFFICIAL</string>
+      <string id="AU_Official">OFFICIAL</string>
+      <string id="AU_OfficialSensitive">OFFICIAL: Sensitive</string>
+      <string id="AU_Protected">PROTECTED</string>
+      <string id="AU_Secret">SECRET</string>
+      <string id="AU_TopSecret">TOP SECRET</string>
+
+
+      <string id="Pol_Position">Set banner position</string>
+      <string id="Pol_Position_Help">When this setting is enabled, the banner positions selected will be shown. When Not Configured or Disabled, only the top banner will display.
+
+Registry: HKLM\Software\Policies\SystemBanner\BannerPosition (REG_DWORD 0 = top only, 1 = top and bottom).</string>
+      <string id="Pos_TopOnly">Top Only</string>
+      <string id="Pos_TopAndBottom">Top And Bottom</string>
+
+      <string id="Pol_FullscreenHide">Hide banner on displays showing a full-screen application</string>
+      <string id="Pol_FullscreenHide_Help">When Enabled, the banner is hidden on any display where a full-screen application is on top, and reappears as soon as that application closes, is minimised, or stops covering the display. Banners on all other displays are unaffected.
+
+Each display is checked independently, so this also works for dedicated displays that run full-screen applications while the user works on another screen. A display counts as showing a full-screen application when the top-most visible window on it covers the entire display. Windows shell surfaces (taskbar, desktop, Alt-Tab, thumbnail previews) and tool windows are ignored.
+
+When Disabled or Not Configured (default), the banner always remains visible. On a display showing a full-screen application, the bottom banner moves to the screen edge so it stays visible over the application.
+
+SECURITY NOTE: while hidden, no classification marking is shown on that display. Confirm this is acceptable for those displays with your security lead.
+
+The banner never changes on mouse hover.
+
+Registry: HKLM\Software\Policies\SystemBanner\FullscreenHide (REG_DWORD 0/1).</string>
+
+      <string id="Pol_OverrideGroups">Choose which groups can change the classification from the right-click menu</string>
+      <string id="Pol_OverrideGroups_Help">Controls who can right-click the banner to set the device classification locally.
+
+Not Configured (default): members of the Administrators group (BUILTIN\Administrators, S-1-5-32-544) can use the menu. On workstations and member servers this is the local Administrators group, which by default includes Domain Admins. On domain controllers it is the domain's Builtin\Administrators group, which by default includes Domain Admins, Enterprise Admins and the domain Administrator account. Because Administrators is restricted under User Account Control, changing the classification shows a UAC prompt.
+
+Enabled: only members of the listed groups can use the menu. Separate multiple entries with semicolons. Accepts DOMAIN\Group, BUILTIN\Group or SIDs (S-1-5-...); SIDs are recommended. Members of non-administrative groups also need write access to HKLM\SOFTWARE\SystemBanner (see Set-SystemBannerOverrideAcl.ps1).
+
+Disabled: nobody can use the menu.
+
+Users who are not permitted see no menu; right-clicking the banner does nothing. The banner is never click-through for any user.
+
+A local override applies only while "Configure classification banner" is not Enabled. Once Group Policy sets a classification, it takes precedence and the menu options are disabled. Changes are written to the Application event log (Event ID 1903).
+
+Registry: HKLM\Software\Policies\SystemBanner\OverrideEnabled (REG_DWORD 0/1) and OverrideGroups (REG_SZ).</string>
     </stringTable>
     <presentationTable>
-      <presentation id="SetSimpleClassificationSetting">
-        <dropdownList refId="SimpleClassificationSetting" defaultItem="0">Simple Classification Setting</dropdownList>
+      <presentation id="ConfigureClassificationBanner">
+        <dropdownList refId="ClassificationSetting" defaultItem="0" noSort="true">Classification</dropdownList>
       </presentation>
       <presentation id="SetBannerPositionSetting">
-        <dropdownList refId="BannerPositionSetting" defaultItem="0">Banner Position Setting</dropdownList>
+        <dropdownList refId="BannerPositionSetting" defaultItem="0" noSort="true">Banner position</dropdownList>
       </presentation>
-      <presentation id="SetCustomBackgroundColor">
-        <decimalTextBox refId="RedBackgroundColorValueinDecimal0-255">Red Background Color Value in Decimal (0-255)</decimalTextBox>
-        <decimalTextBox refId="GreenBackgroundColorValueinDecimal0-255">Green Background Color Value in Decimal (0-255)</decimalTextBox>
-        <decimalTextBox refId="BlueBackgroundColorValueinDecimal0-255">Blue Background Color Value in Decimal (0-255)</decimalTextBox>
-      </presentation>
-      <presentation id="SetCustomForegroundColor">
-        <decimalTextBox refId="RedForegroundColorValueinDecimal0-255">Red Foreground Color Value in Decimal (0-255)</decimalTextBox>
-        <decimalTextBox refId="GreenForegroundColorValueinDecimal0-255">Green Foreground Color Value in Decimal (0-255)</decimalTextBox>
-        <decimalTextBox refId="BlueForegroundColorValueinDecimal0-255">Blue Foreground Color Value in Decimal (0-255)</decimalTextBox>
-      </presentation>
-      <presentation id="SetCustomText">
-        <textBox refId="ForegroundText">
-          <label>Foreground Text</label>
-          <defaultValue>0</defaultValue>
+      <presentation id="SetOverrideGroups">
+        <textBox refId="OverrideGroupsText">
+          <label>Groups (semicolon-separated, e.g. S-1-5-21-...-1234;CONTOSO\Banner-Admins)</label>
         </textBox>
       </presentation>
     </presentationTable>

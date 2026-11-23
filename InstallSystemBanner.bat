@@ -33,6 +33,10 @@ REM Stop SystemBanner if currently running
 REM ============================================================
 TASKLIST /FI "IMAGENAME eq SYSTEMBANNER.EXE" 2>NUL | FIND /I "SYSTEMBANNER.EXE" >NUL
 IF NOT ERRORLEVEL 1 (
+    REM Ask SystemBanner to close first so it releases its reserved screen space,
+    REM then force-close anything still running (a forced close leaves empty bars until Explorer restarts).
+    TASKKILL /IM SYSTEMBANNER.EXE >NUL 2>&1
+    TIMEOUT /T 2 /NOBREAK >NUL
     TASKKILL /F /IM SYSTEMBANNER.EXE >NUL 2>&1
 )
 REM ============================================================
@@ -114,6 +118,11 @@ REM ------------------------------------------------------------
 REM DPI awareness
 REM ------------------------------------------------------------
 ECHO Adding SystemBanner DPI awareness...
+REM Create the local classification key (holds ClassificationOverride; kept on removal)
+REG ADD "HKLM\SOFTWARE\SystemBanner" /F >NUL
+REM Write default settings where missing (never overwrites existing/Group Policy values)
+REM and register the sign-in scheduled task that starts SystemBanner for every user
+START "" /WAIT "%ProgramFiles%\SystemBanner\SystemBanner.exe" /install
 REG ADD "HKLM\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" /V "%ProgramFiles%\SystemBanner\SystemBanner.exe" /T REG_SZ /D "~ HIGHDPIAWARE" /F >NUL
 IF ERRORLEVEL 1 (
     SET "INSTALL_STATUS=FAILED"

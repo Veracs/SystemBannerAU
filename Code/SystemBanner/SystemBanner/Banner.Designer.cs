@@ -1,13 +1,24 @@
-﻿//Copyright (c) 2026, Aaron Wawrzyniak. MIT License Applies.
+//Copyright (c) 2026, Aaron Wawrzyniak. MIT License Applies.
+//Modified by Applied Virtual Simulation Pty Ltd (heavily customised from the original).
+//Modified fork:
+//  - Removed mouse-hover opacity change (banner colour is always what policy sets).
+//  - Optional per-display hiding while a full-screen application is shown (FullscreenHide=1).
+//  - Right-click "set classification" menu for members of policy-defined groups only.
+//    For everyone else right-click does nothing. The banner is never click-through.
 using System;
+using System.ComponentModel;
 using System.Windows.Forms;
-using System.Windows.Forms.VisualStyles;
 
 namespace SystemBanner
 {
     partial class Banner
     {
-        //make my form click-through
+        private const int WS_EX_TOPMOST = 0x00000008;
+        private const int WS_EX_TRANSPARENT = 0x00000020;
+        private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_LAYERED = 0x00080000;
+        private const int WS_EX_NOACTIVATE = 0x08000000;
+
         protected override CreateParams CreateParams
         {
             get
@@ -15,15 +26,27 @@ namespace SystemBanner
                 CreateParams cp = base.CreateParams;
                 cp.Style &= (~0x00C00000); // WS_CAPTION
                 cp.Style &= (~0x00800000); // WS_BORDER
-                cp.ExStyle = 0x00000080 | 0x00000008; // WS_EX_TOOLWINDOW | WS_EX_TOPMOST
-                cp.ExStyle |= 0x80000 /* WS_EX_LAYERED */ | 0x20 /* WS_EX_TRANSPARENT */ | 0x80/* WS_EX_TOOLWINDOW */;
+                //The banner is never click-through (no WS_EX_TRANSPARENT): clicks land on the banner
+                //itself and never reach the desktop or windows behind it. WS_EX_NOACTIVATE stops a
+                //click from taking focus. Only authorised users get a right-click menu; for everyone
+                //else right-click does nothing.
+                cp.ExStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE;
+                //Unowned top-level window. WinForms normally makes ShowInTaskbar=false forms "owned"
+                //by a hidden window; Restart Manager (MSI uninstall/upgrade) and TASKKILL skip owned
+                //windows, so the app never received their close requests. WS_EX_TOOLWINDOW already
+                //keeps the banner off the taskbar and Alt-Tab.
+                cp.Parent = IntPtr.Zero;
                 return cp;
             }
         }
 
-        //building a rectangle for multiple Windows USER32 API Calls
+        //never steal focus when shown
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
 
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] 
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         private struct RECT
         {
             public int left;
@@ -32,21 +55,132 @@ namespace SystemBanner
             public int bottom;
         }
 
-        //Setup for checking if any apps are fullscreen as per https://stackoverflow.com/questions/3743956/is-there-a-way-to-check-to-see-if-another-program-is-running-full-screen
         [System.Runtime.InteropServices.DllImport("USER32")]
         private static extern bool GetWindowRect(System.Runtime.InteropServices.HandleRef hWnd, [System.Runtime.InteropServices.In, System.Runtime.InteropServices.Out] ref RECT rect);
 
         [System.Runtime.InteropServices.DllImport("USER32")]
         private static extern System.IntPtr GetForegroundWindow();
-        //make labels
+
+        [System.Runtime.InteropServices.DllImport("USER32", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern int GetClassName(System.IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+        [System.Runtime.InteropServices.DllImport("USER32")]
+        private static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId);
+
+        //Windows shell surfaces (taskbar, thumbnail previews, desktop, Alt-Tab, Start/flyouts, etc.).
+        //Some are monitor-sized and were mistaken for fullscreen apps, which pushed the bottom
+        //banner behind the taskbar (e.g. while taskbar thumbnail previews were shown).
+        private static readonly System.Collections.Generic.HashSet<string> shellWindowClasses =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW",
+            "TaskListThumbnailWnd", "TaskListOverlayWnd", "XamlExplorerHostIslandWindow",
+            "Windows.UI.Core.CoreWindow", "MultitaskingViewFrame", "TaskSwitcherWnd",
+            "ForegroundStaging", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland",
+            "Shell_InputSwitchTopLevelWindow", "ApplicationFrameWindow_Shell"
+        };
+
+        private static string GetWindowClass(System.IntPtr hWnd)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+            return GetClassName(hWnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
+        }
+
+        private bool lastFullscreen;
+        private static readonly uint ownProcessId = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+
+        //--------------------------------------------------------------------
+        // Per-display fullscreen detection.
+        // Walks top-level windows in z-order (top first). For each display, the first eligible
+        // window that overlaps it is what the user sees on top there; if that window covers the
+        // whole display, the display is treated as showing a full-screen application.
+        // This works on every display at once (e.g. dedicated display panels running full-screen
+        // apps while the user works on another screen), not just for the active window.
+        // Result is cached briefly and shared by all banners.
+        //--------------------------------------------------------------------
+        private delegate bool EnumWindowsProc(System.IntPtr hWnd, System.IntPtr lParam);
+        [System.Runtime.InteropServices.DllImport("USER32")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, System.IntPtr lParam);
+        [System.Runtime.InteropServices.DllImport("USER32")]
+        private static extern bool IsWindowVisible(System.IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("USER32")]
+        private static extern bool IsIconic(System.IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("USER32", EntryPoint = "GetWindowLong")]
+        private static extern int GetWindowLong32(System.IntPtr hWnd, int nIndex);
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(System.IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+        private const int GWL_EXSTYLE = -20;
+        private const int DWMWA_CLOAKED = 14;
+
+        private static bool[] fsCovered = new bool[0];
+        private static string[] fsCoveringClass = new string[0];
+        private static int fsCacheTick;
+
+        private static bool IsDisplayFullscreen(int screenIndex, out string coveringClass)
+        {
+            System.Windows.Forms.Screen[] screens = System.Windows.Forms.Screen.AllScreens;
+            int now = Environment.TickCount;
+            if (fsCovered.Length != screens.Length || unchecked(now - fsCacheTick) > 100)
+            {
+                bool[] covered = new bool[screens.Length];
+                bool[] decided = new bool[screens.Length];
+                string[] classes = new string[screens.Length];
+                int remaining = screens.Length;
+                System.Collections.Generic.List<System.IntPtr> windows = new System.Collections.Generic.List<System.IntPtr>();
+                EnumWindows(delegate (System.IntPtr h, System.IntPtr l) { windows.Add(h); return true; }, System.IntPtr.Zero);
+
+                foreach (System.IntPtr h in windows)
+                {
+                    if (remaining == 0) break;
+                    if (!IsWindowVisible(h) || IsIconic(h)) continue;
+                    int cloaked;
+                    if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0 && cloaked != 0) continue; //other virtual desktops, suspended UWP
+                    if ((GetWindowLong32(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0) continue; //small overlays/tool windows
+                    uint pid;
+                    GetWindowThreadProcessId(h, out pid);
+                    if (pid == ownProcessId) continue;
+                    string cls = GetWindowClass(h);
+                    if (shellWindowClasses.Contains(cls)) continue;
+
+                    RECT r = new RECT();
+                    if (!GetWindowRect(new System.Runtime.InteropServices.HandleRef(null, h), ref r)) continue;
+                    if (r.right <= r.left || r.bottom <= r.top) continue;
+
+                    for (int i = 0; i < screens.Length; i++)
+                    {
+                        if (decided[i]) continue;
+                        System.Drawing.Rectangle b = screens[i].Bounds;
+                        bool overlaps = r.left < b.Right && r.right > b.Left && r.top < b.Bottom && r.bottom > b.Top;
+                        if (!overlaps) continue;
+                        decided[i] = true;
+                        remaining--;
+                        covered[i] = r.left <= b.Left && r.top <= b.Top && r.right >= b.Right && r.bottom >= b.Bottom;
+                        classes[i] = cls;
+                    }
+                }
+                fsCovered = covered;
+                fsCoveringClass = classes;
+                fsCacheTick = now;
+            }
+            if (screenIndex < 0 || screenIndex >= fsCovered.Length)
+            {
+                coveringClass = null;
+                return false;
+            }
+            coveringClass = fsCoveringClass[screenIndex];
+            return fsCovered[screenIndex];
+        }
+
         private System.Windows.Forms.Label classificationLabel;
         private System.Windows.Forms.Label leftLabel;
         private System.Windows.Forms.Label rightLabel;
+        private System.Windows.Forms.Timer bannerTimer;
 
         #region SystemBanner
 
         private void BuildBanner(int bannerScreen, bool bannerPosition)
-        {   int bannerWidth = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Width; //be as wide as the screen it's on
+        {
+            int bannerWidth = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Width;
             int bannerHeight;
             if (System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Height < 1441) //gross magic numbers that ought be fixed ASAP
             {
@@ -56,66 +190,67 @@ namespace SystemBanner
             {
                 bannerHeight = 25;
             }
-            // 
+            //
             // Banner
-            // 
-            this.ClientSize = new System.Drawing.Size(bannerWidth, bannerHeight); //set the size from the above pair of INTs
-            this.ControlBox = false; //no controls
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None; //no border
-            this.MaximizeBox = false; //no controls
-            this.MinimizeBox = false; //no controls
-            this.Name = "SystemBanner"; 
-            this.ShowIcon = false; //no controls
-            this.Left = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.X; //appear at the left of the screen
-            this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Y; //appear at the top of the screen
+            //
+            this.ClientSize = new System.Drawing.Size(bannerWidth, bannerHeight);
+            this.ControlBox = false;
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+            this.Name = "SystemBanner";
+            this.ShowIcon = false;
+            this.Left = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.X;
+            this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Y;
             if (bannerPosition == Program.bannerBottom)
             {
-                this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].WorkingArea.Bottom - bannerHeight; //appear at the bottom of the screen
+                this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].WorkingArea.Bottom - bannerHeight;
             }
             this.Opacity = 0.99; //magic number, balance of readability between the banner text and lower window controls
-            this.BackColor = System.Drawing.Color.Magenta;
-            this.TransparencyKey = System.Drawing.Color.Magenta;
-            this.Text = "SystemBanner"; 
-            this.ShowInTaskbar = false; //look ma, no controls
+            this.Text = "SystemBanner";
+            this.ShowInTaskbar = false;
             this.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
-            this.BackColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[0], Program.bannerColor[1], Program.bannerColor[2]); //set the background colors to the values the function arguments specify
-            this.ForeColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[3], Program.bannerColor[4], Program.bannerColor[5]); //set the foreground colors to the values the function arguments specify
+            this.BackColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[0], Program.bannerColor[1], Program.bannerColor[2]);
+            this.ForeColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[3], Program.bannerColor[4], Program.bannerColor[5]);
+            //Upstream used Magenta as TransparencyKey; removed so a policy colour can never be keyed out.
             //
             //Labels
             //
-            this.classificationLabel = new System.Windows.Forms.Label(); //create the label
-            this.classificationLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter; //draw the text centered within the banner/label
-            this.classificationLabel.Size = new System.Drawing.Size(bannerWidth/2, bannerHeight); //make the label the same size as the banner itself
-            this.classificationLabel.Text = Program.bannerText; //set the text to the value the function argument specifies
-            this.classificationLabel.Font = new System.Drawing.Font("Arial", bannerHeight-3, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel); //set the label font to bold
-            this.classificationLabel.Top = 1; //appear at the top of the banner
-            this.classificationLabel.Left = (bannerWidth / 4); //appear at the left of the banner
-            this.Controls.Add(this.classificationLabel); //draw the label
+            this.classificationLabel = new System.Windows.Forms.Label();
+            this.classificationLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            this.classificationLabel.Size = new System.Drawing.Size(bannerWidth / 2, bannerHeight);
+            this.classificationLabel.Text = Program.bannerText;
+            this.classificationLabel.UseMnemonic = false; //don't treat '&' in custom text as an accelerator
+            this.classificationLabel.Font = new System.Drawing.Font("Arial", bannerHeight - 3, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+            this.classificationLabel.Top = 1;
+            this.classificationLabel.Left = (bannerWidth / 4);
+            this.Controls.Add(this.classificationLabel);
 
-            if ( Program.debug == true)
-            {
-                this.leftLabel = new System.Windows.Forms.Label(); //create the label
-                this.leftLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter; //draw the text centered within the banner/label
-                this.leftLabel.Size = new System.Drawing.Size(160, bannerHeight); //make the label the same size as the banner itself
-                this.leftLabel.Text = "SCREEN: " + bannerScreen; //set the text to the value the function argument specifies
-                this.leftLabel.Font = new System.Drawing.Font("Arial", bannerHeight - 1, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel); //set the label font to bold
-                this.leftLabel.Top = 1; //appear at the top of the banner
-                this.leftLabel.Left = 0; //appear at the left of the banner
-                //this.leftLabel.BackColor = System.Drawing.Color.Black;
-                this.Controls.Add(this.leftLabel); //draw the label
-            }
             if (Program.debug == true)
             {
-                this.rightLabel = new System.Windows.Forms.Label(); //create the label
-                this.rightLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter; //draw the text centered within the banner/label
-                this.rightLabel.Size = new System.Drawing.Size(160, bannerHeight); //make the label the same size as the banner itself
-                this.rightLabel.Text = "DEBUG: " + Program.debug; //set the text to the value the function argument specifies
-                this.rightLabel.Font = new System.Drawing.Font("Arial", bannerHeight - 1, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel); //set the label font to bold
-                this.rightLabel.Top = 1; //appear at the top of the banner
-                this.rightLabel.Left = bannerWidth - this.rightLabel.Width; //appear at the left of the banner
-                //this.rightLabel.BackColor = System.Drawing.Color.Black;
-                this.Controls.Add(this.rightLabel); //draw the label
+                this.leftLabel = new System.Windows.Forms.Label();
+                this.leftLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+                this.leftLabel.Size = new System.Drawing.Size(160, bannerHeight);
+                this.leftLabel.Text = "SCREEN: " + bannerScreen;
+                this.leftLabel.Font = new System.Drawing.Font("Arial", bannerHeight - 1, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+                this.leftLabel.Top = 1;
+                this.leftLabel.Left = 0;
+                this.Controls.Add(this.leftLabel);
+
+                this.rightLabel = new System.Windows.Forms.Label();
+                this.rightLabel.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+                this.rightLabel.Size = new System.Drawing.Size(160, bannerHeight);
+                this.rightLabel.Text = "DEBUG: " + Program.debug;
+                this.rightLabel.Font = new System.Drawing.Font("Arial", bannerHeight - 1, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+                this.rightLabel.Top = 1;
+                this.rightLabel.Left = bannerWidth - this.rightLabel.Width;
+                this.Controls.Add(this.rightLabel);
             }
+
+            //
+            //Right-click menu (authorised users only)
+            //
+            this.DoubleBuffered = true; //smoother in-place repaint when the classification changes
 
             eventLogMessage += ("BANNER " + bannerScreen + " DISPLAY COORDINATES?" + System.Environment.NewLine);
             eventLogMessage += (this.Left + "L," + this.Top + "T," + this.Right + "R," + this.Bottom + "B" + System.Environment.NewLine);
@@ -123,89 +258,174 @@ namespace SystemBanner
 
             RefreshBannerTimer();
 
-            bool MouseOver(Form form) //if the mouse is hovering over the Banner then return true
+            void RefreshBannerTimer()
             {
-                if (bannerScreen < System.Windows.Forms.Screen.AllScreens.Length)
-                {
-                    if ((Cursor.Position.X < form.Right && Cursor.Position.X >= form.Left))
-                    {
-                        if (Cursor.Position.Y < form.Bottom && Cursor.Position.Y >= form.Top)
-                        {
-                            return true;
-
-                        }
-                    }
-                    return false;
-                }
-                this.Close();
-                return false;
-            }
-            bool IsForegroundFullScreen() //if any app is fullscreen and it clips the top left of the screen the banner is on, return true
-            {
-
-                RECT rect = new RECT();
-                System.IntPtr hWnd = (System.IntPtr)GetForegroundWindow();
-
-
-                GetWindowRect(new System.Runtime.InteropServices.HandleRef(null, hWnd), ref rect);
-
-                if ((bannerScreen) < System.Windows.Forms.Screen.AllScreens.Length)
-                {
-                    if (System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Width == (rect.right - rect.left) && System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Height == (rect.bottom - rect.top))
-                    {
-                        if (rect.left == System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.X)
-                        {
-                            return true;
-                        }
-                        else
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-                else
-                {
-                    this.Close();
-                    return false;
-                }
-
-            }
-
-            void RefreshBannerTimer() //run every 0.05 seconds to detect if a mouse hover or a fullscreen app should change opacity, and if so, do it. Else, set opacity back to normal.
-            {
-                Timer bannerTimer = new Timer();
+                bannerTimer = new System.Windows.Forms.Timer();
                 bannerTimer.Interval = (50); // 0.05 sec
                 bannerTimer.Tick += new System.EventHandler(RefreshBanner);
                 bannerTimer.Start();
             }
+
+            //Mouse-hover opacity change REMOVED (banner is always fully visible in its configured colour).
+            //Full-screen handling, per display:
+            //  FullscreenHide=1: banners on a display showing a full-screen app are hidden until it closes.
+            //  otherwise: the bottom banner drops to the screen edge over the full-screen app (upstream behaviour).
             void RefreshBanner(object sender, System.EventArgs e)
             {
-                if (MouseOver(this))
+                if (this.IsDisposed) return;
+                if (bannerScreen >= System.Windows.Forms.Screen.AllScreens.Length)
                 {
-                    this.Opacity = 0.3;
+                    //display removed: internal close (the 5 s display check rebuilds banners)
+                    Program.closingInternally = true;
+                    try { this.Close(); } finally { Program.closingInternally = false; }
+                    return;
                 }
-                else if (IsForegroundFullScreen())
+                string coveringClass;
+                bool fullscreen = IsDisplayFullscreen(bannerScreen, out coveringClass);
+                if (this.IsDisposed) return;
+
+                //DebuggingEnabled=1 in policy: log which window triggered fullscreen handling (helps tune shellWindowClasses)
+                if (fullscreen != lastFullscreen)
                 {
-                    this.Opacity = 0.3;
-                    if (bannerPosition)
+                    lastFullscreen = fullscreen;
+                    if (Program.debug)
                     {
-                        this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Bottom - bannerHeight;
+                        Program.LogEventString("SystemBanner screen " + bannerScreen + (bannerPosition ? " bottom" : " top") +
+                            ": fullscreen=" + fullscreen + " top window class='" + coveringClass + "'");
                     }
                 }
-                else
+
+                bool hide = fullscreen && Program.fullscreenHide;
+                if (hide)
                 {
-                    this.Opacity = 0.99;
-                    if (bannerPosition)
+                    if (this.Visible) this.Hide();
+                    return;
+                }
+                if (!this.Visible) this.Show(); //ShowWithoutActivation: never steals focus
+
+                if (bannerPosition)
+                {
+                    //Use the rect the shell actually reserved for this AppBar (not the cached WorkingArea,
+                    //which can be stale during a rebuild and caused a gap above the taskbar).
+                    int targetTop = fullscreen
+                        ? System.Windows.Forms.Screen.AllScreens[bannerScreen].Bounds.Bottom - bannerHeight
+                        : (abRect.bottom != 0
+                            ? abRect.top
+                            : System.Windows.Forms.Screen.AllScreens[bannerScreen].WorkingArea.Bottom - bannerHeight); //fallback if AppBar registration failed
+                    if (this.Top != targetTop)
                     {
-                        this.Top = System.Windows.Forms.Screen.AllScreens[bannerScreen].WorkingArea.Bottom;
+                        this.Top = targetTop;
                     }
                 }
             }
+        }
 
+        //Update colours, text and menu on the existing banner (no close/rebuild, so no flicker).
+        //Called by Program when the classification or authorisation changes.
+        public void ApplyAppearance()
+        {
+            if (this.IsDisposed) return;
+            this.SuspendLayout();
+            this.BackColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[0], Program.bannerColor[1], Program.bannerColor[2]);
+            this.ForeColor = System.Drawing.Color.FromArgb(255, Program.bannerColor[3], Program.bannerColor[4], Program.bannerColor[5]);
+            if (this.classificationLabel != null)
+            {
+                this.classificationLabel.Text = Program.bannerText;
+            }
+            this.ResumeLayout();
+            this.Invalidate(true);
+        }
+
+        //--------------------------------------------------------------------
+        // Right-click menu (authorised users only).
+        // Uses a native Win32 popup menu (TrackPopupMenuEx), the same kind the taskbar and
+        // notification area use. A WinForms ContextMenuStrip opened from this never-activated
+        // window created a stray taskbar button. The menu is rebuilt on every right-click so it
+        // always reflects current policy/override state. Unauthorised users: right-click does nothing.
+        //--------------------------------------------------------------------
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr CreatePopupMenu();
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern bool AppendMenu(IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string lpNewItem);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hWnd, IntPtr lptpm);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool DestroyMenu(IntPtr hMenu);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private const uint MF_STRING = 0x0, MF_GRAYED = 0x1, MF_CHECKED = 0x8, MF_SEPARATOR = 0x800;
+        private const uint TPM_RIGHTBUTTON = 0x2, TPM_NONOTIFY = 0x80, TPM_RETURNCMD = 0x100;
+        private const int MenuIdRemove = 100; //classification levels use their own number (1-6) as the menu id
+
+        private void ShowClassificationMenu(int x, int y)
+        {
+            //re-check membership at open time; fail closed
+            if (!Program.IsUserAuthorised()) return;
+
+            bool gpoManaged = Program.bannerSource == Program.BannerSource.GroupPolicy;
+            IntPtr menu = CreatePopupMenu();
+            if (menu == IntPtr.Zero) return;
+            int cmd = 0;
+            IntPtr previous = GetForegroundWindow();
+            try
+            {
+                //When Group Policy is enforcing, say so first so it's clear why the options are greyed out
+                if (gpoManaged)
+                {
+                    AppendMenu(menu, MF_STRING | MF_GRAYED, UIntPtr.Zero, "Managed by Group Policy - local changes disabled");
+                    AppendMenu(menu, MF_SEPARATOR, UIntPtr.Zero, null);
+                }
+                for (int level = 1; level < Program.PresetCount; level++)
+                {
+                    uint flags = MF_STRING;
+                    if (gpoManaged) flags |= MF_GRAYED;
+                    if (Program.bannerSource == Program.BannerSource.LocalOverride && Program.activeLevel == level) flags |= MF_CHECKED;
+                    AppendMenu(menu, flags, (UIntPtr)(uint)level, Program.presetTexts[level].Replace("&", "&&"));
+                }
+                AppendMenu(menu, MF_SEPARATOR, UIntPtr.Zero, null);
+                bool canRemove = !gpoManaged && Program.bannerSource == Program.BannerSource.LocalOverride;
+                AppendMenu(menu, MF_STRING | (canRemove ? 0 : MF_GRAYED), (UIntPtr)(uint)MenuIdRemove, "Remove classification");
+
+                //Required for the menu to close when the user clicks elsewhere (allowed: the user just right-clicked us)
+                SetForegroundWindow(this.Handle);
+                cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, x, y, this.Handle, IntPtr.Zero);
+                PostMessage(this.Handle, 0x0000 /*WM_NULL*/, IntPtr.Zero, IntPtr.Zero);
+            }
+            finally
+            {
+                DestroyMenu(menu);
+            }
+
+            if (cmd == MenuIdRemove)
+            {
+                ApplyClassification(0);
+            }
+            else if (cmd >= 1 && cmd < Program.PresetCount)
+            {
+                ApplyClassification(cmd);
+            }
+
+            //give focus back to whatever the user was working in
+            if (previous != IntPtr.Zero && previous != this.Handle && !this.IsDisposed)
+            {
+                SetForegroundWindow(previous);
+            }
+        }
+
+        //No confirmation dialog: the change applies immediately (admins under UAC still get the
+        //Windows approval prompt). Every change is written to the Application event log (ID 1903).
+        private void ApplyClassification(int level)
+        {
+            string error;
+            if (!Program.SetOverride(level, this.Handle, out error))
+            {
+                MessageBox.Show(this, error, "SystemBanner", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            Program.ScheduleRefresh();
         }
 
         #endregion
@@ -214,21 +434,20 @@ namespace SystemBanner
         private string eventLogMessage;
         //courtesy of https://www.codeproject.com/Articles/6741/AppBar-using-C
 
-
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        private struct APPBARDATA //creates the struct that contains the data AppBarMessages need to function
+        private struct APPBARDATA
         {
-            public int cbSize; //specifies the size in bytes of the APPBARDATA struct
-            public System.IntPtr hWnd; //specifies the pointer of the AppBar
+            public int cbSize;
+            public System.IntPtr hWnd;
             public int uCallbackMessage;
-            public int uEdge; //specifies which edge of the screen the AppBar lives on. In this app, ABE_TOP (1) is always used. 
-            public RECT rc; //specifies the bounds of the screen that the AppBar is assigned to
+            public int uEdge;
+            public RECT rc;
             public System.IntPtr lParam;
         }
 
-        enum ABMsg : int //conversion of the human readable ABM types (NEW, REMOVE, QUERYPOS, etc.) to their integer values that the AppBarMessages actually use.
+        enum ABMsg : int
         {
-            ABM_NEW = 0, //creates the appbar and sets a pointer
+            ABM_NEW = 0,
             ABM_REMOVE = 1,
             ABM_QUERYPOS = 2,
             ABM_SETPOS = 3,
@@ -239,11 +458,11 @@ namespace SystemBanner
             ABM_SETAUTOHIDEBAR = 8,
             ABM_WINDOWPOSCHANGED = 9,
             ABM_SETSTATE = 10,
-            ABM_GETAUTOHIDEBAREX = 11, //get the pointer of the AutoHideAppBarEx on the specified screen and edge
-            ABM_SETAUTOHIDEBAREX = 12 //what we use to set an AppBar that shows up on a specific screen.
+            ABM_GETAUTOHIDEBAREX = 11,
+            ABM_SETAUTOHIDEBAREX = 12
         }
 
-        enum ABNotify : int //conversion of the human readable ABN types to their integer values that the AppBarMessages actually use.
+        enum ABNotify : int
         {
             ABN_STATECHANGE = 0,
             ABN_POSCHANGED = 1,
@@ -251,7 +470,7 @@ namespace SystemBanner
             ABN_WINDOWARRANGE = 3
         }
 
-        enum ABEdge : int //specifies which edge of the screen the AppBar lives on. In this app, ABE_TOP (1) is always used. 
+        enum ABEdge : int
         {
             ABE_LEFT = 0,
             ABE_TOP = 1,
@@ -259,108 +478,162 @@ namespace SystemBanner
             ABE_BOTTOM = 3
         }
 
-        //pull in USER32 and SHELL32 to interact with the system and build the AppBars 
-
         [System.Runtime.InteropServices.DllImport("SHELL32", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)]
         static extern uint SHAppBarMessage(int dwMessage, ref APPBARDATA pData);
         [System.Runtime.InteropServices.DllImport("USER32")]
         private static extern int RegisterWindowMessage(string msg);
         private int uCallBack;
-        private void BuildAppBar(int appBarScreen, bool appBarPosition) //build an AppBar and set the position and screen of the AppBar
+
+        //State for this banner's AppBar
+        private int abScreen;
+        private bool abBottom;
+        private int abHeight;
+        private RECT abRect;
+        private bool abRegistered;
+
+        //Register the AppBar with the shell, then position it using the documented
+        //ABM_QUERYPOS -> ABM_SETPOS protocol. Upstream computed the bottom position from
+        //Screen.WorkingArea, which can be stale while the previous AppBar is being removed
+        //during a rebuild, leaving a gap above the taskbar.
+        private void BuildAppBar(int appBarScreen, bool appBarPosition)
         {
-            int appBarHeight;
-            if (System.Windows.Forms.Screen.AllScreens[appBarScreen].Bounds.Height < 1441) //Gross magic numbers for scaling. This will be fixed ASAP.
+            abScreen = appBarScreen;
+            abBottom = (appBarPosition == Program.bannerBottom);
+            abHeight = System.Windows.Forms.Screen.AllScreens[appBarScreen].Bounds.Height < 1441 ? 17 : 25; //gross magic numbers kept from upstream
+
+            uCallBack = RegisterWindowMessage("SystemBannerAppBarMessage");
+
+            APPBARDATA abd = new APPBARDATA();
+            abd.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abd);
+            abd.hWnd = this.Handle;
+            abd.uCallbackMessage = uCallBack; //lets the shell tell us when the taskbar/other AppBars move
+            abRegistered = SHAppBarMessage((int)ABMsg.ABM_NEW, ref abd) != 0;
+
+            abRect = new RECT();
+            PositionAppBar();
+
+            eventLogMessage = ("APPBAR " + appBarScreen + (abBottom ? " BOTTOM" : " TOP") + " REGISTERED=" + abRegistered + System.Environment.NewLine);
+            eventLogMessage += (abRect.left + "L," + abRect.top + "T," + abRect.right + "R," + abRect.bottom + "B" + System.Environment.NewLine);
+            Program.LogEventString(eventLogMessage);
+        }
+
+        private void PositionAppBar()
+        {
+            if (!abRegistered || this.IsDisposed) return;
+            if (abScreen >= System.Windows.Forms.Screen.AllScreens.Length) return;
+            System.Drawing.Rectangle b = System.Windows.Forms.Screen.AllScreens[abScreen].Bounds;
+
+            APPBARDATA abd = new APPBARDATA();
+            abd.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abd);
+            abd.hWnd = this.Handle;
+            abd.uEdge = abBottom ? (int)ABEdge.ABE_BOTTOM : (int)ABEdge.ABE_TOP;
+            abd.rc.left = b.Left;
+            abd.rc.right = b.Right;
+            if (abBottom)
             {
-                appBarHeight = 17;
+                abd.rc.bottom = b.Bottom;
+                abd.rc.top = b.Bottom - abHeight;
             }
             else
             {
-                appBarHeight = 25;
+                abd.rc.top = b.Top;
+                abd.rc.bottom = b.Top + abHeight;
             }
-            APPBARDATA abd = new APPBARDATA();//new instance of the APPBARDATA struct
-            abd.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abd);  //grab the size of the abd instance
-            abd.hWnd = this.Handle; //specify the pointer of the abd as the pointer of this AppBar instance
-            abd.uEdge = (int)ABEdge.ABE_TOP; //set the appbar screen edge binding to top
-            if (appBarPosition == Program.bannerBottom) //if appbar is for a bottom banner...
+
+            //Shell adjusts rc to avoid the taskbar and any other AppBars on this edge
+            SHAppBarMessage((int)ABMsg.ABM_QUERYPOS, ref abd);
+            if (abBottom)
             {
-                abd.uEdge = (int)ABEdge.ABE_BOTTOM; //set the appbar screen edge binding to bottom
+                abd.rc.top = abd.rc.bottom - abHeight;
             }
-            abd.lParam = (IntPtr)1; //set lParam to true to specify the autohidebarex call to register the appbar, not unregister it
-            uCallBack = RegisterWindowMessage("AppBarMessage");
-            SHAppBarMessage((int)ABMsg.ABM_NEW, ref abd); //create the new AppBar using the above data
-            //
-            //dimensions of the AppBar on the screen that the AppBar will run on
-            //
-            abd.rc.left = System.Windows.Forms.Screen.AllScreens[appBarScreen].Bounds.X; //left of the screen X coordinate
-            abd.rc.top = System.Windows.Forms.Screen.AllScreens[appBarScreen].Bounds.Y; //top of the screen Y coordinate
-            abd.rc.right = abd.rc.left + System.Windows.Forms.Screen.AllScreens[appBarScreen].Bounds.Width; //top right of the screen X coordinate
-            abd.rc.bottom = abd.rc.top + appBarHeight; //appBarHeight is the number of pixels down from the top of the screen
-            if (appBarPosition == Program.bannerBottom) //if appbar is for a bottom banner...
+            else
             {
-                abd.rc.bottom = System.Windows.Forms.Screen.AllScreens[appBarScreen].WorkingArea.Bottom; //appBar bottom is the bottom of the working area (minus the taskbar, of course)
-                abd.rc.top = System.Windows.Forms.Screen.AllScreens[appBarScreen].WorkingArea.Bottom - appBarHeight; //appBar top is the bottom of the working area less the height of the appbar.
+                abd.rc.bottom = abd.rc.top + abHeight;
             }
-            eventLogMessage = ("APPBAR " + appBarScreen + " COORDINATES?" + System.Environment.NewLine);
-            eventLogMessage += (abd.rc.left + "L," + abd.rc.top + "T," + abd.rc.right + "R," + abd.rc.bottom + "B" + System.Environment.NewLine);
-            eventLogMessage += ("APPBAR " + appBarScreen + " POSITIONED?" + System.Environment.NewLine);
-            eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_SETPOS, ref abd) + System.Environment.NewLine); //set the position of the appbar on the screen and write a 1 for true in the console if the positioning succeeded
-            eventLogMessage += ("APPBAR " + appBarScreen + " REGISTERED?" + System.Environment.NewLine);
-            //eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_SETAUTOHIDEBAREX, ref abd) + System.Environment.NewLine); //register the autohidebarex and write a 1 for true if the registration succeeded
-            System.IntPtr hWnd = (System.IntPtr)SHAppBarMessage((int)ABMsg.ABM_GETAUTOHIDEBAREX, ref abd); //grab ptr of the running appbar to ensure it exists
-            eventLogMessage += ("APPBAR " + appBarScreen + " WITH PTR " + abd.hWnd + " RUNNING." + System.Environment.NewLine);
-            Program.LogEventString(eventLogMessage);
+
+            //Only SETPOS when something changed (avoids notification ping-pong)
+            if (abd.rc.left != abRect.left || abd.rc.top != abRect.top ||
+                abd.rc.right != abRect.right || abd.rc.bottom != abRect.bottom)
+            {
+                SHAppBarMessage((int)ABMsg.ABM_SETPOS, ref abd);
+                abRect = abd.rc;
+            }
+            this.SetBounds(abRect.left, abRect.top, abRect.right - abRect.left, abHeight);
         }
-        private void KillAppBar() //kill an AppBar at the position and screen of the AppBar
+
+        //Reposition when the shell reports the taskbar or another AppBar on our edge changed
+        protected override void WndProc(ref Message m)
         {
-            APPBARDATA abd = new APPBARDATA();//new instance of the APPBARDATA struct
-            abd.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abd);  //grab the size of the abd instance
-            abd.hWnd = this.Handle; //specify the pointer of the abd as the pointer of this AppBar instance
-            abd.uEdge = (int)ABEdge.ABE_TOP; //set the appbar screen edge binding to top
-            abd.lParam = (IntPtr)0; //set lParam to false to specify the autohidebarex call to unregister the appbar, not register it
-            uCallBack = RegisterWindowMessage("AppBarMessage");
-            abd.rc.left = System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.X; //top left of the screen X coordinate
-            abd.rc.top = System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Y; //top left of the screen Y coordinate
-            abd.rc.right = abd.rc.left + System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Width; //top right of the screen X coordinate
-            abd.rc.bottom = abd.rc.top + System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Height; //bottom left of the screen Y coordinate
-
-            eventLogMessage = ("REMOVING APPBAR WITH PTR " + abd.hWnd + "." + System.Environment.NewLine);
-            eventLogMessage += ("QUERYING APPBAR POS ");
-            eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_GETAUTOHIDEBAREX, ref abd) + System.Environment.NewLine); //get the details of the appbar on the screen and write a 1 for true in the console if the positioning succeeded
-            eventLogMessage += ("APPBAR " + " COORDINATES?" + System.Environment.NewLine);
-            eventLogMessage += (abd.rc.left + "L," + abd.rc.top + "T," + abd.rc.right + "R," + abd.rc.bottom + "B" + System.Environment.NewLine);
-            eventLogMessage += ("UNREGISTERING APPBAR ");
-            eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_SETAUTOHIDEBAREX, ref abd) + System.Environment.NewLine); //unregister the autohidebarex and write a 1 for true if the action succeeded
-            eventLogMessage += ("REMOVING APPBAR ");
-            eventLogMessage += SHAppBarMessage((int)ABMsg.ABM_REMOVE, ref abd); //remove the AppBar using the above data and writes a 1 for true if the removal succeeded
-            Program.LogEventString(eventLogMessage);
-
-            if (Program.bannerTopAndBottom)
+            const int WM_QUERYENDSESSION = 0x0011;
+            const int WM_ENDSESSION = 0x0016;
+            if (m.Msg == WM_QUERYENDSESSION)
             {
-                APPBARDATA abdBottom = new APPBARDATA();//new instance of the APPBARDATA struct
-                abdBottom.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abdBottom);  //grab the size of the abdBottom instance
-                abdBottom.hWnd = this.Handle; //specify the pointer of the abdBottom as the pointer of this AppBar instance
-                abdBottom.uEdge = (int)ABEdge.ABE_TOP; //set the appbar screen edge binding to top
-                abdBottom.lParam = (IntPtr)0; //set lParam to false to specify the autohidebarex call to unregister the appbar, not register it
-                uCallBack = RegisterWindowMessage("AppBarMessage");
-                abdBottom.rc.left = System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.X; //top left of the screen X coordinate
-                abdBottom.rc.top = System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Y; //top left of the screen Y coordinate
-                abdBottom.rc.right = abdBottom.rc.left + System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Width; //top right of the screen X coordinate
-                abdBottom.rc.bottom = abdBottom.rc.top + System.Windows.Forms.Screen.FromHandle(this.Handle).Bounds.Height; //bottom left of the screen Y coordinate
-
-                eventLogMessage = ("REMOVING APPBAR WITH PTR " + abdBottom.hWnd + "." + System.Environment.NewLine);
-                eventLogMessage += ("QUERYING APPBAR POS ");
-                eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_GETAUTOHIDEBAREX, ref abdBottom) + System.Environment.NewLine); //get the details of the appbar on the screen and write a 1 for true in the console if the positioning succeeded
-                eventLogMessage += ("APPBAR " + " COORDINATES?" + System.Environment.NewLine);
-                eventLogMessage += (abdBottom.rc.left + "L," + abdBottom.rc.top + "T," + abdBottom.rc.right + "R," + abdBottom.rc.bottom + "B" + System.Environment.NewLine);
-                eventLogMessage += ("UNREGISTERING APPBAR ");
-                eventLogMessage += (SHAppBarMessage((int)ABMsg.ABM_SETAUTOHIDEBAREX, ref abdBottom) + System.Environment.NewLine); //unregister the autohidebarex and write a 1 for true if the action succeeded
-                eventLogMessage += ("REMOVING APPBAR ");
-                eventLogMessage += SHAppBarMessage((int)ABMsg.ABM_REMOVE, ref abdBottom); //remove the AppBar using the above data and writes a 1 for true if the removal succeeded
-                Program.LogEventString(eventLogMessage);
+                Program.LogEventString("SystemBanner: WM_QUERYENDSESSION lParam=0x" + m.LParam.ToInt64().ToString("X"));
+                //Restart Manager (Windows Installer) / logoff asks whether we can close: yes.
+                m.Result = (IntPtr)1;
+                return;
             }
+            if (m.Msg == WM_ENDSESSION)
+            {
+                Program.LogEventString("SystemBanner: WM_ENDSESSION wParam=" + m.WParam.ToInt64() + " lParam=0x" + m.LParam.ToInt64().ToString("X"));
+                if (m.WParam != IntPtr.Zero)
+                {
+                    //Release reserved screen space before Windows ends the process.
+                    Program.Shutdown("WM_ENDSESSION");
+                }
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            const int WM_CONTEXTMENU = 0x007B;
+            if (m.Msg == WM_CONTEXTMENU)
+            {
+                //right-clicks on the labels bubble up here too. Unauthorised users: do nothing.
+                if (Program.overrideAuthorised)
+                {
+                    long lp = m.LParam.ToInt64();
+                    int x = unchecked((short)(lp & 0xFFFF));
+                    int y = unchecked((short)((lp >> 16) & 0xFFFF));
+                    if (lp == -1) { x = Cursor.Position.X; y = Cursor.Position.Y; } //keyboard-invoked
+                    ShowClassificationMenu(x, y);
+                }
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            const int WM_MOUSEACTIVATE = 0x0021;
+            const int MA_NOACTIVATE = 3;
+            if (m.Msg == WM_MOUSEACTIVATE)
+            {
+                //clicking the banner never activates it or changes focus
+                m.Result = (IntPtr)MA_NOACTIVATE;
+                return;
+            }
+            if (uCallBack != 0 && m.Msg == uCallBack)
+            {
+                if ((int)m.WParam == (int)ABNotify.ABN_POSCHANGED)
+                {
+                    PositionAppBar();
+                }
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
+        //Used by Program.Shutdown to release this banner's reserved screen space.
+        public void ReleaseAppBar()
+        {
+            KillAppBar();
+        }
+
+        private void KillAppBar()
+        {
+            if (!abRegistered) return;
+            APPBARDATA abd = new APPBARDATA();
+            abd.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(abd);
+            abd.hWnd = this.Handle;
+            uint removed = SHAppBarMessage((int)ABMsg.ABM_REMOVE, ref abd);
+            abRegistered = false;
+            Program.LogEventString("REMOVING APPBAR WITH PTR " + abd.hWnd + " RESULT=" + removed);
         }
         #endregion
-
     }
 }
-
