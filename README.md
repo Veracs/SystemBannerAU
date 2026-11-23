@@ -39,20 +39,39 @@ SystemBanner starts at the next sign-in, or run `C:\Program Files\SystemBanner\S
 
 ### Silent installation
 
-Run from an elevated prompt (deployment tools such as Intune, SCCM or Action1 run as SYSTEM, which covers this):
+Run from an **elevated** (Run as administrator) prompt. With `/qn` there is no UAC prompt, so a non-elevated silent install simply fails. Deployment tools such as Intune, SCCM or Action1 run as SYSTEM, which covers this.
+
+> `msiexec` returns to the prompt immediately and carries on in the background, so use the commands below, which **wait** for the install to finish and report its exit code. Use the PowerShell commands in PowerShell and the Command Prompt commands in Command Prompt: they are not interchangeable (for example, `%TEMP%` and `start /wait` don't work in PowerShell).
+
+**PowerShell**
 
 ```powershell
-# Install
-msiexec /i "SystemBannerSetup.msi" /qn /norestart
-
-# Install with a log (for troubleshooting)
-msiexec /i "SystemBannerSetup.msi" /qn /norestart /l*v "%TEMP%\SystemBanner-install.log"
+# Install (log written to C:\Temp\SystemBanner-install.log)
+New-Item -ItemType Directory C:\Temp -Force | Out-Null
+$p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/i "C:\Path\To\SystemBannerSetup.msi" /qn /norestart /l*v "C:\Temp\SystemBanner-install.log"'
+"Exit code: $($p.ExitCode)"
 
 # Uninstall
-msiexec /x "SystemBannerSetup.msi" /qn /norestart
+$p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/x "C:\Path\To\SystemBannerSetup.msi" /qn /norestart /l*v "C:\Temp\SystemBanner-uninstall.log"'
+"Exit code: $($p.ExitCode)"
 ```
 
-- `/qn` = no user interface (`/qb` shows a progress bar only); `/norestart` = never restart automatically.
+**Command Prompt**
+
+```bat
+:: Install (log written to C:\Temp\SystemBanner-install.log)
+if not exist C:\Temp mkdir C:\Temp
+start "" /wait msiexec /i "C:\Path\To\SystemBannerSetup.msi" /qn /norestart /l*v "C:\Temp\SystemBanner-install.log"
+echo Exit code: %ERRORLEVEL%
+
+:: Uninstall
+start "" /wait msiexec /x "C:\Path\To\SystemBannerSetup.msi" /qn /norestart /l*v "C:\Temp\SystemBanner-uninstall.log"
+echo Exit code: %ERRORLEVEL%
+```
+
+Replace `C:\Path\To\` with the MSI's actual location. Use the full path; relative paths such as `.\SystemBannerSetup.msi` are unreliable with `msiexec`. The log is optional: remove `/l*v "…"` if you don't need it.
+
+- `/qn` = no user interface (`/qb` shows a progress bar only); `/norestart` = never restart automatically; `/l*v` = full log.
 - Exit codes: **0** = success, **3010** = success, restart required (rare). Any other code is a failure; check the log.
 - Do not set `TARGETDIR`. SystemBanner must be installed in `C:\Program Files\SystemBanner`; any other location makes the installation fail and roll back.
 - Upgrades: install the newer MSI the same way. The old version is replaced and existing settings are kept. A running SystemBanner closes itself cleanly, and users see the banner again at their next sign-in.
