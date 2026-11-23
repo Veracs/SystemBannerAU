@@ -60,6 +60,7 @@ Before testing, confirm the classification colours against the current PSPF rele
 | 25a | After install, Task Scheduler › Task Scheduler Library | **SystemBanner** task present: "At log on of any user", runs as Users, no time limit. After uninstall it is removed (also with `RemoveSystemBanner.bat`). | |
 | 25b | Sign out and in (and on a domain controller) | Banner appears within a second or two of the desktop appearing. A single process in that session (`Get-Process SystemBanner`). | |
 | 25c | Restart Explorer (Task Manager › Windows Explorer › Restart) while SystemBanner runs | Within about 2 s the bars reserve their space again, and maximised windows don't cover them. | |
+| 25d | `msiexec /i SystemBannerSetup.msi TARGETDIR="C:\Temp\SB\" /qn /l*v log.txt` | Installation **fails and rolls back**, leaving no files, task or registry entries. The Application event log explains the refused location. | |
 | 26 | Fresh install on a clean machine (no SystemBanner keys) | All defaults in the README registry reference are present: `Classification`=0, `BannerPosition`=0, `FullscreenHide`=0, `OverrideEnabled`=1, `OverrideGroups`=`S-1-5-32-544`, `DebuggingEnabled`=0, `ClassificationOverride`=0. The banner shows "not configured" and admins get the menu. | |
 | 27 | Upgrade or reinstall with existing settings (e.g. `BannerPosition`=1 by GPO, `ClassificationOverride`=4 from the menu) | Existing values are **unchanged** after install. Defaults only fill in missing values. | |
 | 28 | `InstallSystemBanner.bat` on a clean machine | Same defaults as test 26. | |

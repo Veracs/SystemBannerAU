@@ -29,13 +29,35 @@ Install `SystemBannerSetup.msi` (double-click, or `msiexec /i SystemBannerSetup.
 
 The installer:
 
-- copies `SystemBanner.exe` to `C:\Program Files\SystemBanner` (fixed location; override only with `TARGETDIR=` on the command line),
+- copies `SystemBanner.exe` to `C:\Program Files\SystemBanner`. This location is fixed: a custom `TARGETDIR=` is refused and the installation is rolled back,
 - copies the Group Policy templates to `C:\Windows\PolicyDefinitions` and `C:\Windows\PolicyDefinitions\en-US`,
 - registers a scheduled task, **SystemBanner**, that starts SystemBanner at sign-in for every user. It typically starts within a second or two, ahead of normal startup programs, runs as the signed-in user with standard rights, and has no time limit. A startup (Run key) entry is also kept as a backup; only one copy ever runs per session,
 - marks SystemBanner as High DPI aware (`HKLM\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`),
 - writes the default settings (see [Registry reference](#registry-reference)) to `HKLM\SOFTWARE\Policies\SystemBanner` and `HKLM\SOFTWARE\SystemBanner`, by running `SystemBanner.exe /install` (which also registers the scheduled task). Only **missing** values are written: an install or upgrade never overwrites settings already applied by Group Policy, Intune or the right-click menu. These values are left in place on removal.
 
 SystemBanner starts at the next sign-in, or run `C:\Program Files\SystemBanner\SystemBanner.exe`. Only one instance runs per signed-in session. If Explorer restarts (or the taskbar loads after SystemBanner), the banners re-reserve their screen space automatically.
+
+### Silent installation
+
+Run from an elevated prompt (deployment tools such as Intune, SCCM or Action1 run as SYSTEM, which covers this):
+
+```powershell
+# Install
+msiexec /i "SystemBannerSetup.msi" /qn /norestart
+
+# Install with a log (for troubleshooting)
+msiexec /i "SystemBannerSetup.msi" /qn /norestart /l*v "%TEMP%\SystemBanner-install.log"
+
+# Uninstall
+msiexec /x "SystemBannerSetup.msi" /qn /norestart
+```
+
+- `/qn` = no user interface (`/qb` shows a progress bar only); `/norestart` = never restart automatically.
+- Exit codes: **0** = success, **3010** = success, restart required (rare). Any other code is a failure; check the log.
+- Do not set `TARGETDIR`. SystemBanner must be installed in `C:\Program Files\SystemBanner`; any other location makes the installation fail and roll back.
+- Upgrades: install the newer MSI the same way. The old version is replaced and existing settings are kept. A running SystemBanner closes itself cleanly, and users see the banner again at their next sign-in.
+- Intune: upload the MSI as a **line-of-business app**; Intune generates the install and uninstall commands.
+- Uninstall without the MSI file: `msiexec /x {PRODUCT-CODE} /qn /norestart`. The product code changes with each version; find it in Settings › Apps or `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`.
 
 ## Removal
 
