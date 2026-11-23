@@ -76,13 +76,74 @@ Replace `C:\Path\To\` with the MSI's actual location. Use the full path; relativ
 - Do not set `TARGETDIR`. SystemBanner must be installed in `C:\Program Files\SystemBanner`; any other location makes the installation fail and roll back.
 - Upgrades: install the newer MSI the same way. The old version is replaced and existing settings are kept. A running SystemBanner closes itself cleanly, and users see the banner again at their next sign-in.
 - Intune: upload the MSI as a **line-of-business app**; Intune generates the install and uninstall commands.
-- Uninstall without the MSI file: `msiexec /x {PRODUCT-CODE} /qn /norestart`. The product code changes with each version; find it in Settings › Apps or `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`.
+- Uninstalling without the MSI file: see [Removal](#removal).
 
 ## Removal
 
-Uninstall SystemBanner from Settings › Apps (or `msiexec /x`), or run `RemoveSystemBanner.bat` as an administrator.
+### Manually (Installed apps)
 
-Removal also deletes the **SystemBanner** scheduled task. A running SystemBanner closes itself cleanly during uninstall, upgrade or repair: it releases its reserved screen space before exiting, so no empty bars are left. Only a forced kill (Task Manager › End task, or `TASKKILL /F`) can leave empty reserved space behind; restart Windows Explorer or sign out to clear it.
+1. Open **Settings › Apps › Installed apps** (Windows 10: **Settings › Apps › Apps & features**).
+2. Search for **SystemBanner**.
+3. Select **⋯ › Uninstall** (Windows 10: select the app, then **Uninstall**) and confirm.
+
+**Control Panel › Programs › Programs and Features** works as well.
+
+### Silently, with the MSI file
+
+Use the uninstall commands under [Silent installation](#silent-installation) (`msiexec /x "C:\Path\To\SystemBannerSetup.msi" /qn /norestart`).
+
+### Silently, without the MSI file
+
+The installed product is identified by its **product code**, a GUID that changes with each version. Look it up, then pass it to `msiexec /x`.
+
+**1. Find the product code** (elevated PowerShell):
+
+```powershell
+Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+    Where-Object DisplayName -eq 'SystemBanner' |
+    Select-Object DisplayName, DisplayVersion, Publisher, @{n='ProductCode';e={$_.PSChildName}}, UninstallString
+```
+
+The `ProductCode` column shows something like `{71516EE3-1AE7-4E09-90F9-513047727961}`. The registry location is `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{ProductCode}`.
+
+**2. Uninstall using the product code:**
+
+```powershell
+$p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/x {PRODUCT-CODE} /qn /norestart /l*v "C:\Temp\SystemBanner-uninstall.log"'
+"Exit code: $($p.ExitCode)"
+```
+
+```bat
+start "" /wait msiexec /x {PRODUCT-CODE} /qn /norestart /l*v "C:\Temp\SystemBanner-uninstall.log"
+echo Exit code: %ERRORLEVEL%
+```
+
+Replace `{PRODUCT-CODE}` with the value from step 1, including the braces. Remove `/l*v "…"` if you don't need a log (if you keep it, make sure `C:\Temp` exists).
+
+**Or find and uninstall in one step** (PowerShell, elevated):
+
+```powershell
+$app = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+       Where-Object DisplayName -eq 'SystemBanner'
+if ($app) {
+    $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/x $($app.PSChildName) /qn /norestart"
+    "Exit code: $($p.ExitCode)"
+} else {
+    'SystemBanner is not installed.'
+}
+```
+
+### With the script
+
+Run `RemoveSystemBanner.bat` as an administrator. It is intended for installs made with `InstallSystemBanner.bat`; use one of the methods above for MSI installs.
+
+### What removal does
+
+- Closes a running SystemBanner cleanly, releasing its reserved screen space so no empty bars are left. Only a forced kill (Task Manager › End task, or `TASKKILL /F`) can leave empty reserved space behind; restart Windows Explorer or sign out to clear it.
+- Removes the program files, the Group Policy templates from `C:\Windows\PolicyDefinitions`, the startup entry and the **SystemBanner** scheduled task.
+- **Leaves the settings in place:** `HKLM\SOFTWARE\Policies\SystemBanner`, which Group Policy controls, and `HKLM\SOFTWARE\SystemBanner`, which holds the local classification. When decommissioning a device, delete `HKLM\SOFTWARE\SystemBanner` (and remove the device from any SystemBanner GPO) so a previous marking isn't shown if SystemBanner is reinstalled.
 
 ## Administration
 
